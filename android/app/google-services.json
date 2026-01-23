@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "14415901485",
+    "project_id": "ignite-ai-f907c",
+    "storage_bucket": "ignite-ai-f907c.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:14415901485:android:0d5b70a8cd60701b1219a4",
+        "android_client_info": {
+          "package_name": "com.medexplain.medexplain_ai"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "14415901485-9u6tiqkd4f8mm5esic9nm44qd9sa8bg9.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.medexplain.medexplain_ai",
+            "certificate_hash": "d25cdf8a3428f9d366357c937d053c8c63b54d0f"
+          }
+        },
+        {
+          "client_id": "14415901485-2i22iiedh1iutq3efq1f5rc5lu9pnbi6.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB0qzNoAm8G7jVM4OMvwjHOfkrRQ9WGqok"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "14415901485-2i22iiedh1iutq3efq1f5rc5lu9pnbi6.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

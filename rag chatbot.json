@@ -1,0 +1,393 @@
+{
+  "name": "MedExplain AI - Complete with RAG Chat",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "medexplain-analyze",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        352,
+        176
+      ],
+      "webhookId": "medexplain-webhook",
+      "id": "c005c096-89a8-4b05-b933-d627685b6935"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.body?.chat_mode === true || $json.chat_mode === true || $json.body?.mode === 'chat' || $json.mode === 'chat' }}",
+              "value2": "={{ true }}"
+            }
+          ]
+        }
+      },
+      "name": "Chat or Analysis?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        544,
+        176
+      ],
+      "id": "e1b69c7f-07da-426f-91f1-4123b405eb33"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"model\": \"llama-3.3-70b-versatile\", \"temperature\": 0.3, \"max_tokens\": 1024, \"messages\": [ { \"role\": \"system\", \"content\": \"You are a helpful medical assistant. Answer questions about the medical report. Never diagnose or recommend treatment. Always remind users to consult their healthcare provider.\" }, { \"role\": \"user\", \"content\": \"Report: \" + ($json.body?.report_context || $json.report_context || \"No report\") + \" Question: \" + ($json.body?.question || $json.question || \"No question\") } ] } }}",
+        "options": {}
+      },
+      "name": "Chat AI Call",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        800,
+        64
+      ],
+      "id": "1a2baf7c-15fb-477f-9c70-09f432a8d618",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "NXqZPfvnhMFJVsM2",
+          "name": "Header Auth account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Parse Chat Response\nconst item = $input.first().json;\nconst choices = item.choices || [];\n\nif (choices.length === 0) {\n  return {\n    json: {\n      response: 'I apologize, but I could not process your question. Please try again.',\n      status: 'error'\n    }\n  };\n}\n\nconst content = choices[0].message.content;\n\nreturn {\n  json: {\n    response: content,\n    status: 'success'\n  }\n};"
+      },
+      "name": "Format Chat Response",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1008,
+        64
+      ],
+      "id": "eb433d23-ed4c-4a7c-af24-8bc86d747e9b"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "name": "Chat Webhook Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1200,
+        64
+      ],
+      "id": "0a37b554-0994-495d-854c-e48e9f58e9a1"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Privacy & De-identification Check\n// Redact potential PII from medical reports\n\nconst item = $input.first().json;\nconst body = item.body || item;\nconst reportText = body.reportText || body.report_text || '';\n\n// Patterns to detect and redact\nconst patterns = {\n  name: /\\b(Mr\\.|Mrs\\.|Ms\\.|Dr\\.)\\s+[A-Z][a-z]+\\s+[A-Z][a-z]+\\b/g,\n  mrn: /\\b(MRN|Medical Record|Patient ID)[:=\\s]*(\\d{6,})\\b/gi,\n  date: /\\b(\\d{1,2}[\\/\\-]\\d{1,2}[\\/\\-]\\d{2,4})\\b/g,\n  phone: /\\b(\\d{3}[-\\s]?\\d{3}[-\\s]?\\d{4})\\b/g,\n  ssn: /\\b\\d{3}-\\d{2}-\\d{4}\\b/g\n};\n\nlet cleanedText = reportText;\nlet redactionsFound = false;\n\nfor (const [type, pattern] of Object.entries(patterns)) {\n  if (pattern.test(cleanedText)) {\n    redactionsFound = true;\n    cleanedText = cleanedText.replace(pattern, `[${type.toUpperCase()} REDACTED]`);\n  }\n}\n\nreturn {\n  json: {\n    mode: body.mode || 'patient',\n    language: body.language || 'en',\n    report_text: cleanedText,\n    original_length: reportText.length,\n    redactions_applied: redactionsFound,\n    timestamp: new Date().toISOString()\n  }\n};"
+      },
+      "name": "Privacy Check",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        800,
+        272
+      ],
+      "id": "2048d8f7-2c77-490b-afe0-b79f3feadb74"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Text Normalization\nconst item = $input.first().json;\nlet text = item.report_text || '';\n\ntext = text.replace(/\\s+/g, ' ').trim();\n\nconst abbreviations = {\n  'w/': 'with',\n  'w/o': 'without',\n  'pt': 'patient',\n  'hx': 'history',\n  'dx': 'diagnosis',\n  'tx': 'treatment',\n  'sx': 'symptoms',\n  'yr': 'year',\n  'yrs': 'years'\n};\n\nfor (const [abbr, full] of Object.entries(abbreviations)) {\n  const regex = new RegExp(`\\\\b${abbr}\\\\b`, 'gi');\n  text = text.replace(regex, full);\n}\n\nif (text.length < 10) {\n  throw new Error('Report text too short. Please provide a complete medical report.');\n}\n\nif (text.length > 50000) {\n  throw new Error('Report text too long. Maximum 50,000 characters.');\n}\n\nreturn {\n  json: {\n    ...item,\n    report_text: text,\n    normalized_length: text.length\n  }\n};"
+      },
+      "name": "Text Normalization",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1008,
+        272
+      ],
+      "id": "c1a87c03-ac2b-4ef9-b7f6-b6225a2311ef"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  \"model\": \"llama-3.3-70b-versatile\",\n  \"temperature\": 0.2,\n  \"max_tokens\": 2048,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a medical report explanation assistant. Your role is to help patients and clinicians understand medical reports safely.\\n\\nCRITICAL RULES:\\n1. NEVER provide diagnosis or treatment recommendations\\n2. Use ONLY public medical guidelines (RSNA, CDC, NIH)\\n3. Explain findings faithfully from the report\\n4. Use simple language for patients (8th-grade level)\\n5. Use bullet points for clinicians\\n6. Always include the disclaimer\\n\\nOUTPUT FORMAT (JSON only, no markdown):\\n{\\n  \\\"patient_summary\\\": \\\"Simple, reassuring explanation in 2-3 sentences\\\",\\n  \\\"possible_meanings\\\": [\\\"Array of what findings may indicate, without diagnosis\\\"],\\n  \\\"questions_for_doctor\\\": [\\\"Relevant questions patient should ask\\\"],\\n  \\\"clinician_findings\\\": [\\\"Bullet points of key findings\\\"],\\n  \\\"critical_values\\\": [\\\"Any abnormal values highlighted\\\"],\\n  \\\"considerations\\\": [\\\"Non-prescriptive clinical considerations\\\"],\\n  \\\"citations\\\": [\\\"Public source URLs or references\\\"]\\n}\\n\\nRespond ONLY with valid JSON. No additional text.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Mode: \" + $json.mode + \"\\n\\nMedical Report:\\n\" + $json.report_text\n    }\n  ]\n} }}",
+        "options": {}
+      },
+      "name": "Analysis AI Call",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1200,
+        272
+      ],
+      "id": "6b09e9cc-3949-4132-8c96-73a75f12c511",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "NXqZPfvnhMFJVsM2",
+          "name": "Header Auth account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Parse Groq API Response\nconst item = $input.first().json;\nconst choices = item.choices || [];\n\nif (choices.length === 0) {\n  throw new Error('No response from AI');\n}\n\nconst content = choices[0].message.content;\n\nlet analysisData;\ntry {\n  const cleanContent = content.replace(/```json\\s*|```/g, '').trim();\n  analysisData = JSON.parse(cleanContent);\n} catch (error) {\n  throw new Error('Failed to parse AI response: ' + error.message);\n}\n\nif (!analysisData.patient_summary) {\n  throw new Error('Invalid AI response: missing patient summary');\n}\n\nreturn {\n  json: {\n    mode: $('Text Normalization').item.json.mode,\n    language: $('Text Normalization').item.json.language,\n    analysis: analysisData\n  }\n};"
+      },
+      "name": "Parse Analysis Response",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1408,
+        272
+      ],
+      "id": "2ec610e8-3449-4fbf-91d9-1c70ca1ae74d"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Red-Flag Detection\nconst item = $input.first().json;\nconst analysis = item.analysis || {};\n\nconst allText = [\n  analysis.patient_summary || '',\n  ...(analysis.possible_meanings || []),\n  ...(analysis.clinician_findings || []),\n  ...(analysis.critical_values || [])\n].join(' ').toLowerCase();\n\nconst redFlagKeywords = [\n  'malignant', 'cancer', 'tumor', 'critical', 'urgent',\n  'emergency', 'stroke', 'heart attack', 'myocardial infarction',\n  'severe', 'life-threatening', 'acute', 'immediately',\n  'sepsis', 'hemorrhage', 'embolism', 'aneurysm'\n];\n\nlet redFlagDetected = false;\nfor (const keyword of redFlagKeywords) {\n  if (allText.includes(keyword)) {\n    redFlagDetected = true;\n    break;\n  }\n}\n\nif ((analysis.critical_values || []).length > 0) {\n  redFlagDetected = true;\n}\n\nreturn {\n  json: {\n    ...item,\n    red_flag: redFlagDetected\n  }\n};"
+      },
+      "name": "Red-Flag Detection",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1600,
+        272
+      ],
+      "id": "0cab9509-02d8-45f9-923e-a399a278142a"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Medical Safety Filter\nconst item = $input.first().json;\nconst analysis = item.analysis || {};\n\nconst prohibitedPhrases = [\n  'you have', 'you are diagnosed', 'take this medication',\n  'stop taking', 'you should take', 'recommended treatment is',\n  'you need to', 'this means you have'\n];\n\nconst allContent = JSON.stringify(analysis).toLowerCase();\n\nfor (const phrase of prohibitedPhrases) {\n  if (allContent.includes(phrase)) {\n    console.warn('Safety filter triggered: prohibited phrase detected');\n  }\n}\n\nconst strongDisclaimer = 'This is for informational purposes only and does NOT constitute medical advice, diagnosis, or treatment. Always consult your healthcare provider for medical decisions.';\n\nreturn {\n  json: {\n    mode: item.mode,\n    language: item.language,\n    red_flag: item.red_flag,\n    analysis: analysis,\n    disclaimer: strongDisclaimer,\n    safety_checked: true,\n    timestamp: new Date().toISOString()\n  }\n};"
+      },
+      "name": "Medical Safety Filter",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1808,
+        272
+      ],
+      "id": "2a26a167-0552-40cc-9937-47a75eafbd77"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Structured Response Builder\nconst item = $input.first().json;\nconst analysis = item.analysis || {};\n\nconst patientView = {\n  summary: analysis.patient_summary || 'No summary available',\n  possible_meaning: analysis.possible_meanings || [],\n  questions_for_doctor: analysis.questions_for_doctor || []\n};\n\nconst clinicianView = {\n  findings: analysis.clinician_findings || [],\n  critical_values: analysis.critical_values || [],\n  considerations: analysis.considerations || []\n};\n\nlet citations = analysis.citations || [];\nif (citations.length === 0) {\n  citations = [\n    'RSNA - Radiological Society of North America (rsna.org)',\n    'NIH - National Institutes of Health (nih.gov)',\n    'CDC - Centers for Disease Control (cdc.gov)'\n  ];\n}\n\nconst response = {\n  status: 'success',\n  red_flag: item.red_flag || false,\n  patient_view: patientView,\n  clinician_view: clinicianView,\n  citations: citations,\n  disclaimer: item.disclaimer\n};\n\nreturn {\n  json: response\n};"
+      },
+      "name": "Response Builder",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        2000,
+        272
+      ],
+      "id": "9864a88c-5f75-43f1-a7c1-f67e25c5a4ab"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "name": "Analysis Webhook Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        2208,
+        272
+      ],
+      "id": "2e469e26-2f95-4fef-b795-60db28cc2aa6"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Chat or Analysis?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chat or Analysis?": {
+      "main": [
+        [
+          {
+            "node": "Chat AI Call",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Privacy Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chat AI Call": {
+      "main": [
+        [
+          {
+            "node": "Format Chat Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Chat Response": {
+      "main": [
+        [
+          {
+            "node": "Chat Webhook Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Privacy Check": {
+      "main": [
+        [
+          {
+            "node": "Text Normalization",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Text Normalization": {
+      "main": [
+        [
+          {
+            "node": "Analysis AI Call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analysis AI Call": {
+      "main": [
+        [
+          {
+            "node": "Parse Analysis Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Analysis Response": {
+      "main": [
+        [
+          {
+            "node": "Red-Flag Detection",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Red-Flag Detection": {
+      "main": [
+        [
+          {
+            "node": "Medical Safety Filter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Medical Safety Filter": {
+      "main": [
+        [
+          {
+            "node": "Response Builder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Response Builder": {
+      "main": [
+        [
+          {
+            "node": "Analysis Webhook Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "versionId": "0016e134-452d-4084-9f91-c708168ae3a4",
+  "meta": {
+    "instanceId": "1532a183ea190ce85fef9cc2b37b28cd0cda2b383b8bf8efebfee0f17f13f7ac"
+  },
+  "id": "GuZpfyHMI-4qVugxt0pTX",
+  "tags": []
+}

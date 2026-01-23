@@ -1,0 +1,485 @@
+{
+  "name": "MedExplain AI - Medical Report & Image Analysis",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "medexplain-analyze",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        2528,
+        544
+      ],
+      "webhookId": "medexplain-webhook",
+      "id": "df8bc674-118b-4d16-9b36-59d72f3c9649"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.body?.image_base64 || $json.image_base64 || '' }}",
+              "operation": "isNotEmpty"
+            }
+          ]
+        }
+      },
+      "name": "Check Image or Text",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        2736,
+        544
+      ],
+      "id": "497dadbc-fbb4-4737-a278-053de77a8086"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Prepare Image for Gemini Analysis\nconst item = $input.first().json;\nconst body = item.body || item;\n\nconst imageBase64 = body.image_base64 || '';\nconst mode = body.mode || 'patient';\nconst language = body.language || 'en';\nconst imageType = body.image_type || 'unknown'; // ct_scan, xray, mri, ultrasound\n\n// Validate image data\nif (!imageBase64 || imageBase64.length < 100) {\n  throw new Error('Invalid or missing image data');\n}\n\n// Clean base64 if it has data URI prefix\nlet cleanBase64 = imageBase64;\nif (imageBase64.includes(',')) {\n  cleanBase64 = imageBase64.split(',')[1];\n}\n\nreturn {\n  json: {\n    image_base64: cleanBase64,\n    mode: mode,\n    language: language,\n    image_type: imageType,\n    timestamp: new Date().toISOString()\n  }\n};"
+      },
+      "name": "Prepare Image Data",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        2976,
+        448
+      ],
+      "id": "7dcf04f4-d62d-4f1f-9eff-ad3ec9d41ab3"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer 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"
+            },
+            {
+              "name": "HTTP-Referer",
+              "value": "https://medexplain.app"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  \"model\": \"google/gemini-2.0-flash-001\",\n  \"temperature\": 0.2,\n  \"max_tokens\": 2048,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"You are a medical image analysis assistant. Analyze this medical image (\" + $json.image_type + \") and extract all visible findings.\\n\\nCRITICAL RULES:\\n1. NEVER provide diagnosis or treatment recommendations\\n2. Only describe what you observe in the image\\n3. Note any abnormalities or areas of concern objectively\\n4. Identify the type of imaging if not specified\\n5. List anatomical structures visible\\n\\nProvide your analysis in this JSON format (no markdown):\\n{\\n  \\\"image_type_detected\\\": \\\"Type of medical image\\\",\\n  \\\"anatomical_region\\\": \\\"Body region shown\\\",\\n  \\\"visible_structures\\\": [\\\"List of visible anatomical structures\\\"],\\n  \\\"observations\\\": [\\\"Objective observations about the image\\\"],\\n  \\\"areas_of_note\\\": [\\\"Any areas that may warrant attention\\\"],\\n  \\\"image_quality\\\": \\\"Assessment of image quality\\\",\\n  \\\"technical_notes\\\": \\\"Any technical observations about the imaging\\\"\\n}\\n\\nRespond ONLY with valid JSON.\"\n        },\n        {\n          \"type\": \"image_url\",\n          \"image_url\": {\n            \"url\": \"data:image/jpeg;base64,\" + $json.image_base64\n          }\n        }\n      ]\n    }\n  ]\n} }}",
+        "options": {}
+      },
+      "name": "Gemini Vision API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        3232,
+        448
+      ],
+      "id": "3c50287f-6463-43fa-8863-c64c3b998247"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Parse OpenRouter Vision Response\nconst item = $input.first().json;\nconst choices = item.choices || [];\n\nif (choices.length === 0) {\n  throw new Error('No response from Vision API');\n}\n\nconst content = choices[0].message?.content || '';\n\n// Parse JSON from response\nlet imageAnalysis;\nlet parseSuccess = false;\n\n// Strategy 1: Direct parse\ntry {\n  const cleanContent = content.replace(/```json\\s*|```/g, '').trim();\n  imageAnalysis = JSON.parse(cleanContent);\n  parseSuccess = true;\n} catch (e) {}\n\n// Strategy 2: Extract JSON\nif (!parseSuccess) {\n  try {\n    const firstBrace = content.indexOf('{');\n    const lastBrace = content.lastIndexOf('}');\n    if (firstBrace !== -1 && lastBrace > firstBrace) {\n      imageAnalysis = JSON.parse(content.substring(firstBrace, lastBrace + 1));\n      parseSuccess = true;\n    }\n  } catch (e) {}\n}\n\nif (!parseSuccess) {\n  // Fallback: create structured response from raw text\n  imageAnalysis = {\n    image_type_detected: 'Medical Image',\n    anatomical_region: 'Unknown',\n    visible_structures: [],\n    observations: [content],\n    areas_of_note: [],\n    image_quality: 'Unable to assess',\n    technical_notes: 'Raw analysis provided'\n  };\n}\n\n// Use workflow static data or defaults\nreturn {\n  json: {\n    mode: 'patient',\n    language: 'en',\n    image_type: imageAnalysis.image_type_detected || 'unknown',\n    image_analysis: imageAnalysis\n  }\n};"
+      },
+      "name": "Parse Gemini Response",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        3472,
+        448
+      ],
+      "id": "4d625516-c4d9-4094-b806-709c044e94f5"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  \"model\": \"llama-3.3-70b-versatile\",\n  \"temperature\": 0.2,\n  \"max_tokens\": 2048,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a medical image explanation assistant. Your role is to help patients and clinicians understand medical imaging findings safely.\\n\\nCRITICAL RULES:\\n1. NEVER provide diagnosis or treatment recommendations\\n2. Use ONLY public medical guidelines (RSNA, CDC, NIH)\\n3. Explain findings faithfully from the analysis\\n4. Use simple language for patients (8th-grade level)\\n5. Use bullet points for clinicians\\n6. Always include the disclaimer\\n\\nOUTPUT FORMAT (JSON only, no markdown):\\n{\\n  \\\"patient_summary\\\": \\\"Simple explanation of what the image shows in 2-3 sentences\\\",\\n  \\\"possible_meanings\\\": [\\\"Array of what observations may indicate, without diagnosis\\\"],\\n  \\\"questions_for_doctor\\\": [\\\"Relevant questions patient should ask about the imaging\\\"],\\n  \\\"clinician_findings\\\": [\\\"Bullet points of key observations\\\"],\\n  \\\"critical_values\\\": [\\\"Any findings that may need attention\\\"],\\n  \\\"considerations\\\": [\\\"Non-prescriptive clinical considerations\\\"],\\n  \\\"citations\\\": [\\\"Public source URLs or references\\\"]\\n}\\n\\nRespond ONLY with valid JSON.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Mode: \" + $json.mode + \"\\n\\nImage Type: \" + $json.image_type + \"\\n\\nImage Analysis Findings:\\n\" + JSON.stringify($json.image_analysis, null, 2)\n    }\n  ]\n} }}",
+        "options": {}
+      },
+      "name": "Groq Summarize Image",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        3728,
+        448
+      ],
+      "id": "6332d546-9385-4d2d-bbb2-e791a143ab9c",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "5AjF1RlSHTKwSJLT",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Parse Groq Summary for Image Analysis\nconst item = $input.first().json;\nconst choices = item.choices || [];\n\nif (choices.length === 0) {\n  throw new Error('No response from AI');\n}\n\nconst content = choices[0].message.content;\n\n// Parse JSON\nlet analysisData;\nlet parseSuccess = false;\n\ntry {\n  const cleanContent = content.replace(/```json\\s*|```/g, '').trim();\n  analysisData = JSON.parse(cleanContent);\n  parseSuccess = true;\n} catch (e) {}\n\nif (!parseSuccess) {\n  try {\n    const firstBrace = content.indexOf('{');\n    const lastBrace = content.lastIndexOf('}');\n    if (firstBrace !== -1 && lastBrace > firstBrace) {\n      analysisData = JSON.parse(content.substring(firstBrace, lastBrace + 1));\n      parseSuccess = true;\n    }\n  } catch (e) {}\n}\n\nif (!parseSuccess || !analysisData) {\n  throw new Error('Failed to parse AI response');\n}\n\nreturn {\n  json: {\n    mode: 'patient',\n    language: 'en',\n    analysis: analysisData,\n    image_analysis: {},\n    is_image_analysis: true\n  }\n};"
+      },
+      "name": "Parse Image Summary",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        3984,
+        448
+      ],
+      "id": "6878d62e-6313-4300-bc9d-13022d7c8366"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Privacy & De-identification Check (Text Path)\nconst item = $input.first().json;\nconst body = item.body || item;\nconst reportText = body.report_text || '';\n\nconst patterns = {\n  name: /\\b(Mr\\.|Mrs\\.|Ms\\.|Dr\\.)\\s+[A-Z][a-z]+\\s+[A-Z][a-z]+\\b/g,\n  mrn: /\\b(MRN|Medical Record|Patient ID)[:=\\s]*(\\d{6,})\\b/gi,\n  date: /\\b(\\d{1,2}[\\/\\-]\\d{1,2}[\\/\\-]\\d{2,4})\\b/g,\n  phone: /\\b(\\d{3}[-\\s]?\\d{3}[-\\s]?\\d{4})\\b/g,\n  ssn: /\\b\\d{3}-\\d{2}-\\d{4}\\b/g\n};\n\nlet cleanedText = reportText;\nlet redactionsFound = false;\n\nfor (const [type, pattern] of Object.entries(patterns)) {\n  if (pattern.test(cleanedText)) {\n    redactionsFound = true;\n    cleanedText = cleanedText.replace(pattern, `[${type.toUpperCase()} REDACTED]`);\n  }\n}\n\nreturn {\n  json: {\n    mode: body.mode || 'patient',\n    language: body.language || 'en',\n    report_text: cleanedText,\n    original_length: reportText.length,\n    redactions_applied: redactionsFound,\n    timestamp: new Date().toISOString(),\n    is_image_analysis: false\n  }\n};"
+      },
+      "name": "Privacy Check",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        2976,
+        656
+      ],
+      "id": "13db3d8e-68af-40b8-944f-13386d00722d"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Text Normalization\nconst item = $input.first().json;\nlet text = item.report_text || '';\n\ntext = text.replace(/\\s+/g, ' ').trim();\n\nconst abbreviations = {\n  'w/': 'with',\n  'w/o': 'without',\n  'pt': 'patient',\n  'hx': 'history',\n  'dx': 'diagnosis',\n  'tx': 'treatment',\n  'sx': 'symptoms',\n  'yr': 'year',\n  'yrs': 'years'\n};\n\nfor (const [abbr, full] of Object.entries(abbreviations)) {\n  const regex = new RegExp(`\\\\b${abbr}\\\\b`, 'gi');\n  text = text.replace(regex, full);\n}\n\nif (text.length < 5) {\n  throw new Error('Report text too short.');\n}\n\nif (text.length > 50000) {\n  throw new Error('Report text too long. Maximum 50,000 characters.');\n}\n\nreturn {\n  json: {\n    ...item,\n    report_text: text,\n    normalized_length: text.length\n  }\n};"
+      },
+      "name": "Text Normalization",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        3232,
+        656
+      ],
+      "id": "fba88bfc-d82a-479f-aff5-04f804a997c3"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  \"model\": \"llama-3.3-70b-versatile\",\n  \"temperature\": 0.2,\n  \"max_tokens\": 2048,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a medical report explanation assistant. Your role is to help patients and clinicians understand medical reports safely.\\n\\nCRITICAL RULES:\\n1. NEVER provide diagnosis or treatment recommendations\\n2. Use ONLY public medical guidelines (RSNA, CDC, NIH)\\n3. Explain findings faithfully from the report\\n4. Use simple language for patients (8th-grade level)\\n5. Use bullet points for clinicians\\n6. Always include the disclaimer: 'This is for informational purposes only. Consult your healthcare provider for medical advice.'\\n\\nOUTPUT FORMAT (JSON only, no markdown):\\n{\\n  \\\"patient_summary\\\": \\\"Simple, reassuring explanation in 2-3 sentences\\\",\\n  \\\"possible_meanings\\\": [\\\"Array of what findings may indicate, without diagnosis\\\"],\\n  \\\"questions_for_doctor\\\": [\\\"Relevant questions patient should ask\\\"],\\n  \\\"clinician_findings\\\": [\\\"Bullet points of key findings\\\"],\\n  \\\"critical_values\\\": [\\\"Any abnormal values highlighted\\\"],\\n  \\\"considerations\\\": [\\\"Non-prescriptive clinical considerations\\\"],\\n  \\\"citations\\\": [\\\"Public source URLs or references\\\"]\\n}\\n\\nRespond ONLY with valid JSON. No additional text.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Mode: \" + $json.mode + \"\\n\\nMedical Report:\\n\" + $json.report_text\n    }\n  ]\n} }}",
+        "options": {}
+      },
+      "name": "Groq API Call",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        3472,
+        656
+      ],
+      "id": "8d1698ae-8547-4b24-a1d0-4372170d169a",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "5AjF1RlSHTKwSJLT",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Parse Groq API Response (Text Path)\nconst item = $input.first().json;\nconst choices = item.choices || [];\n\nif (choices.length === 0) {\n  throw new Error('No response from AI');\n}\n\nconst content = choices[0].message.content;\n\nlet analysisData;\nlet parseSuccess = false;\nlet lastError = '';\n\ntry {\n  const cleanContent = content.replace(/```json\\s*|```/g, '').trim();\n  analysisData = JSON.parse(cleanContent);\n  parseSuccess = true;\n} catch (e) {\n  lastError = e.message;\n}\n\nif (!parseSuccess) {\n  try {\n    const firstBrace = content.indexOf('{');\n    const lastBrace = content.lastIndexOf('}');\n    if (firstBrace !== -1 && lastBrace > firstBrace) {\n      const jsonStr = content.substring(firstBrace, lastBrace + 1);\n      analysisData = JSON.parse(jsonStr);\n      parseSuccess = true;\n    }\n  } catch (e) {\n    lastError = e.message;\n  }\n}\n\nif (!parseSuccess) {\n  try {\n    let fixedContent = content.replace(/```json\\s*|```/g, '');\n    const match = fixedContent.match(/\\{[\\s\\S]*\\}/);\n    if (match) {\n      fixedContent = match[0].replace(/,\\s*}/g, '}').replace(/,\\s*]/g, ']');\n      analysisData = JSON.parse(fixedContent);\n      parseSuccess = true;\n    }\n  } catch (e) {\n    lastError = e.message;\n  }\n}\n\nif (!parseSuccess || !analysisData) {\n  throw new Error('Failed to parse AI response: ' + lastError);\n}\n\nif (!analysisData.patient_summary) {\n  throw new Error('Invalid AI response: missing patient summary');\n}\n\nreturn {\n  json: {\n    mode: 'patient',\n    language: 'en',\n    analysis: analysisData,\n    is_image_analysis: false\n  }\n};"
+      },
+      "name": "Parse Groq Response",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        3728,
+        656
+      ],
+      "id": "fa5094d4-858f-469f-9823-ea096dded594"
+    },
+    {
+      "parameters": {},
+      "name": "Merge Paths",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2,
+      "position": [
+        4224,
+        544
+      ],
+      "id": "db1724b0-5851-4d08-bee3-d4b43e46bfa8"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Red-Flag Detection (Both Paths)\nconst item = $input.first().json;\nconst analysis = item.analysis || {};\n\nconst allText = [\n  analysis.patient_summary || '',\n  ...(analysis.possible_meanings || []),\n  ...(analysis.clinician_findings || []),\n  ...(analysis.critical_values || [])\n].join(' ').toLowerCase();\n\nconst redFlagKeywords = [\n  'malignant', 'cancer', 'tumor', 'critical', 'urgent', 'emergency',\n  'stroke', 'heart attack', 'myocardial infarction', 'severe',\n  'life-threatening', 'acute', 'immediately', 'sepsis', 'hemorrhage',\n  'embolism', 'pulmonary embolism', 'aneurysm', 'fracture', 'mass',\n  'lesion', 'abnormal growth', 'suspicious'\n];\n\nlet redFlagDetected = false;\nlet detectedFlags = [];\n\nfor (const keyword of redFlagKeywords) {\n  if (allText.includes(keyword)) {\n    redFlagDetected = true;\n    detectedFlags.push(keyword);\n  }\n}\n\nif ((analysis.critical_values || []).length > 0) {\n  redFlagDetected = true;\n}\n\nreturn {\n  json: {\n    ...item,\n    red_flag: redFlagDetected,\n    detected_flags: detectedFlags\n  }\n};"
+      },
+      "name": "Red-Flag Detection",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        4432,
+        544
+      ],
+      "id": "0bcbe72c-481d-4fb1-aa38-1422510d52e0"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Medical Safety Filter\nconst item = $input.first().json;\nconst analysis = item.analysis || {};\n\nconst prohibitedPhrases = [\n  'you have', 'you are diagnosed', 'take this medication',\n  'stop taking', 'you should take', 'recommended treatment is',\n  'you need to', 'this means you have'\n];\n\nconst allContent = JSON.stringify(analysis).toLowerCase();\n\nfor (const phrase of prohibitedPhrases) {\n  if (allContent.includes(phrase)) {\n    console.warn('Safety filter triggered: prohibited phrase detected');\n  }\n}\n\nconst strongDisclaimer = 'This is for informational purposes only and does NOT constitute medical advice, diagnosis, or treatment. Always consult your healthcare provider for medical decisions.';\n\nreturn {\n  json: {\n    mode: item.mode,\n    language: item.language,\n    red_flag: item.red_flag,\n    detected_flags: item.detected_flags,\n    analysis: analysis,\n    image_analysis: item.image_analysis || null,\n    is_image_analysis: item.is_image_analysis || false,\n    disclaimer: strongDisclaimer,\n    safety_checked: true,\n    timestamp: new Date().toISOString()\n  }\n};"
+      },
+      "name": "Medical Safety Filter",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        4624,
+        544
+      ],
+      "id": "c6804e9b-db7b-4e04-9394-13f5fd625d96"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Structured Response Builder\nconst item = $input.first().json;\nconst analysis = item.analysis || {};\n\nconst patientView = {\n  summary: analysis.patient_summary || 'No summary available',\n  possible_meaning: analysis.possible_meanings || [],\n  questions_for_doctor: analysis.questions_for_doctor || []\n};\n\nconst clinicianView = {\n  findings: analysis.clinician_findings || [],\n  critical_values: analysis.critical_values || [],\n  considerations: analysis.considerations || []\n};\n\nlet citations = analysis.citations || [];\nif (citations.length === 0) {\n  citations = [\n    'RSNA - Radiological Society of North America (rsna.org)',\n    'NIH - National Institutes of Health (nih.gov)',\n    'CDC - Centers for Disease Control (cdc.gov)'\n  ];\n}\n\n// Include image analysis details if present\nlet imageDetails = null;\nif (item.is_image_analysis && item.image_analysis) {\n  imageDetails = {\n    image_type: item.image_analysis.image_type_detected,\n    anatomical_region: item.image_analysis.anatomical_region,\n    visible_structures: item.image_analysis.visible_structures || [],\n    observations: item.image_analysis.observations || [],\n    image_quality: item.image_analysis.image_quality\n  };\n}\n\nconst response = {\n  status: 'success',\n  red_flag: item.red_flag || false,\n  is_image_analysis: item.is_image_analysis || false,\n  image_details: imageDetails,\n  patient_view: patientView,\n  clinician_view: clinicianView,\n  citations: citations,\n  disclaimer: item.disclaimer\n};\n\nreturn {\n  json: response\n};"
+      },
+      "name": "Response Builder",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        4832,
+        544
+      ],
+      "id": "81ed5b12-33d0-4404-8420-27f730873b2e"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "name": "Webhook Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        5024,
+        544
+      ],
+      "id": "2359d171-3b4a-446a-91fb-16612d5941b0"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Check Image or Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Image or Text": {
+      "main": [
+        [
+          {
+            "node": "Prepare Image Data",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Privacy Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Image Data": {
+      "main": [
+        [
+          {
+            "node": "Gemini Vision API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini Vision API": {
+      "main": [
+        [
+          {
+            "node": "Parse Gemini Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Gemini Response": {
+      "main": [
+        [
+          {
+            "node": "Groq Summarize Image",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq Summarize Image": {
+      "main": [
+        [
+          {
+            "node": "Parse Image Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Image Summary": {
+      "main": [
+        [
+          {
+            "node": "Merge Paths",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Privacy Check": {
+      "main": [
+        [
+          {
+            "node": "Text Normalization",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Text Normalization": {
+      "main": [
+        [
+          {
+            "node": "Groq API Call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq API Call": {
+      "main": [
+        [
+          {
+            "node": "Parse Groq Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Groq Response": {
+      "main": [
+        [
+          {
+            "node": "Merge Paths",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Paths": {
+      "main": [
+        [
+          {
+            "node": "Red-Flag Detection",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Red-Flag Detection": {
+      "main": [
+        [
+          {
+            "node": "Medical Safety Filter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Medical Safety Filter": {
+      "main": [
+        [
+          {
+            "node": "Response Builder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Response Builder": {
+      "main": [
+        [
+          {
+            "node": "Webhook Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "versionId": "a965a833-3c54-4acd-bf2a-c5ca33ac95b6",
+  "meta": {
+    "instanceId": "e632ccea2c620786be94454a6134e57ab30daff888dcc23766e6b1c4c105ac6d"
+  },
+  "id": "CQUKMJk4AEqFFj_fIcjdB",
+  "tags": []
+}
